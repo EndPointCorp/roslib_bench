@@ -2302,8 +2302,8 @@ if(typeof bson !== 'undefined'){
     BSON = bson().BSON;
 }
 
-var perfStart;
 var perfSamples = [];
+var perfStart;
 
 /**
  * Events listeners for a WebSocket or TCP socket to a JavaScript
@@ -2316,7 +2316,8 @@ var perfSamples = [];
 function SocketAdapter(client) {
   function handleMessage(message) {
     if (message.op === 'publish') {
-      perfSamples.push(window.performance.now() - perfStart);
+      client.emit(message.topic, message.msg);
+      perfSamples.push(performance.now() - perfStart);
       if (perfSamples.length === 100) {
         var sum = perfSamples.reduce(function(a, b) { return a + b; });
         var avg = sum / 100;
@@ -2329,7 +2330,6 @@ function SocketAdapter(client) {
         report.innerText = '100 decoded avg ' + avg;
         document.body.appendChild(report);
       }
-      client.emit(message.topic, message.msg);
     } else if (message.op === 'service_response') {
       client.emit(message.id, message);
     } else if (message.op === 'call_service') {
@@ -2411,7 +2411,7 @@ function SocketAdapter(client) {
           handleCompression(message, handleMessage);
         });
       */
-      perfStart = window.performance.now();
+      perfStart = performance.now();
       if (data.data instanceof ArrayBuffer) {
         handleMessage(CBOR.decode(data.data));
       } else {

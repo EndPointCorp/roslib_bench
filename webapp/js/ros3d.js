@@ -45079,9 +45079,6 @@ var INTERACTIVE_MARKER_MOVE_AXIS = 3;
 var INTERACTIVE_MARKER_MOVE_PLANE = 4;
 var INTERACTIVE_MARKER_ROTATE_AXIS = 5;
 var INTERACTIVE_MARKER_MOVE_ROTATE = 6;
-var INTERACTIVE_MARKER_MOVE_3D = 7;
-var INTERACTIVE_MARKER_ROTATE_3D = 8;
-var INTERACTIVE_MARKER_MOVE_ROTATE_3D = 9;
 
 // Interactive marker rotation behavior
 var INTERACTIVE_MARKER_INHERIT = 0;
@@ -50115,8 +50112,6 @@ class InteractiveMarkerControl extends THREE$1.Object3D {
     this.loader = options.loader;
     this.dragging = false;
     this.startMousePos = new THREE$1.Vector2();
-    this.isShift = false;
-
 
     // orientation for the control
     var controlOri = new THREE$1.Quaternion(message.orientation.x, message.orientation.y,
@@ -50131,9 +50126,6 @@ class InteractiveMarkerControl extends THREE$1.Object3D {
 
     // determine mouse interaction
     switch (message.interaction_mode) {
-      case INTERACTIVE_MARKER_MOVE_ROTATE_3D:
-      case INTERACTIVE_MARKER_MOVE_3D:
-        this.addEventListener('mousemove', this.parent.move3d.bind(this.parent, this, controlAxis));
       case INTERACTIVE_MARKER_MOVE_AXIS:
         this.addEventListener('mousemove', this.parent.moveAxis.bind(this.parent, this, controlAxis));
         this.addEventListener('touchmove', this.parent.moveAxis.bind(this.parent, this, controlAxis));
@@ -50202,17 +50194,6 @@ class InteractiveMarkerControl extends THREE$1.Object3D {
           that.dispatchEvent(event3d);
           event3d.type = 'click';
           that.dispatchEvent(event3d);
-        }
-      });
-
-      window.addEventListener('keydown', function(event){
-        if(event.keyCode === 16){
-          that.isShift = true;
-        }
-      });
-      window.addEventListener('keyup', function(event){
-        if(event.keyCode === 16){
-          that.isShift = false;
         }
       });
     }
@@ -50644,54 +50625,6 @@ class InteractiveMarker extends THREE$1.Object3D {
 
 
       event3d.stopPropagation();
-    }
-  };
-
-
-  /**
-   * Move with respect to the plane based on the contorl and event.
-   *
-   * @param control - the control to use
-   * @param origNormal - the normal of the origin
-   * @param event3d - the event that caused this
-   */
-  move3d(control, origNormal, event3d) {
-    // by default, move in a plane
-    if (this.dragging) {
-
-      if(control.isShift){
-        // this doesn't work
-        // // use the camera position and the marker position to determine the axis
-        // var newAxis = control.camera.position.clone();
-        // newAxis.sub(this.position);
-        // // now mimic same steps constructor uses to create origAxis
-        // var controlOri = new THREE.Quaternion(newAxis.x, newAxis.y,
-        //     newAxis.z, 1);
-        // controlOri.normalize();
-        // var controlAxis = new THREE.Vector3(1, 0, 0);
-        // controlAxis.applyQuaternion(controlOri);
-        // origAxis = controlAxis;
-      }else{
-        // we want to use the origin plane that is closest to the camera
-        var cameraVector = control.camera.getWorldDirection();
-        var x = Math.abs(cameraVector.x);
-        var y = Math.abs(cameraVector.y);
-        var z = Math.abs(cameraVector.z);
-        var controlOri = new THREE$1.Quaternion(1, 0, 0, 1);
-        if(y > x && y > z){
-          // orientation for the control
-          controlOri = new THREE$1.Quaternion(0, 0, 1, 1);
-        }else if(z > x && z > y){
-          // orientation for the control
-          controlOri = new THREE$1.Quaternion(0, 1, 0, 1);
-        }
-        controlOri.normalize();
-
-        // transform x axis into local frame
-        origNormal = new THREE$1.Vector3(1, 0, 0);
-        origNormal.applyQuaternion(controlOri);
-        this.movePlane(control, origNormal, event3d);
-      }
     }
   };
 
@@ -52546,12 +52479,12 @@ class OccupancyGrid extends THREE$1.Mesh {
     // create the mesh
     super(geom, material);
     // move the map so the corner is at X, Y and correct orientation (informations from message.info)
-    this.quaternion.copy(new THREE$1.Quaternion(
+    this.quaternion = new THREE$1.Quaternion(
         message.info.origin.orientation.x,
         message.info.origin.orientation.y,
         message.info.origin.orientation.z,
         message.info.origin.orientation.w
-    ));
+    );
     this.position.x = (width * message.info.resolution) / 2 + message.info.origin.position.x;
     this.position.y = (height * message.info.resolution) / 2 + message.info.origin.position.y;
     this.position.z = message.info.origin.position.z;
@@ -54829,9 +54762,6 @@ exports.INTERACTIVE_MARKER_MOVE_AXIS = INTERACTIVE_MARKER_MOVE_AXIS;
 exports.INTERACTIVE_MARKER_MOVE_PLANE = INTERACTIVE_MARKER_MOVE_PLANE;
 exports.INTERACTIVE_MARKER_ROTATE_AXIS = INTERACTIVE_MARKER_ROTATE_AXIS;
 exports.INTERACTIVE_MARKER_MOVE_ROTATE = INTERACTIVE_MARKER_MOVE_ROTATE;
-exports.INTERACTIVE_MARKER_MOVE_3D = INTERACTIVE_MARKER_MOVE_3D;
-exports.INTERACTIVE_MARKER_ROTATE_3D = INTERACTIVE_MARKER_ROTATE_3D;
-exports.INTERACTIVE_MARKER_MOVE_ROTATE_3D = INTERACTIVE_MARKER_MOVE_ROTATE_3D;
 exports.INTERACTIVE_MARKER_INHERIT = INTERACTIVE_MARKER_INHERIT;
 exports.INTERACTIVE_MARKER_FIXED = INTERACTIVE_MARKER_FIXED;
 exports.INTERACTIVE_MARKER_VIEW_FACING = INTERACTIVE_MARKER_VIEW_FACING;

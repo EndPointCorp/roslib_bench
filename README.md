@@ -16,4 +16,8 @@ git submodule update --init --recursive
 
 e.g.
 
-`python ./shovel_pcls.py 10000 0.1  # 100,000 points/second`
+`python ./shovel_pcls.py 5000 0.1  # 100,000 points/second`
+
+#### Change the compression type
+
+It is in <webapp/js/bench.js>

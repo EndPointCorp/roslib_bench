@@ -1,4 +1,412 @@
 (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+/*
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2014 Patrick Gansterer <paroga@paroga.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+(function(global, undefined) { "use strict";
+var POW_2_24 = Math.pow(2, -24),
+    POW_2_32 = Math.pow(2, 32),
+    POW_2_53 = Math.pow(2, 53);
+
+function encode(value) {
+  var data = new ArrayBuffer(256);
+  var dataView = new DataView(data);
+  var lastLength;
+  var offset = 0;
+
+  function ensureSpace(length) {
+    var newByteLength = data.byteLength;
+    var requiredLength = offset + length;
+    while (newByteLength < requiredLength)
+      newByteLength *= 2;
+    if (newByteLength !== data.byteLength) {
+      var oldDataView = dataView;
+      data = new ArrayBuffer(newByteLength);
+      dataView = new DataView(data);
+      var uint32count = (offset + 3) >> 2;
+      for (var i = 0; i < uint32count; ++i)
+        dataView.setUint32(i * 4, oldDataView.getUint32(i * 4));
+    }
+
+    lastLength = length;
+    return dataView;
+  }
+  function write() {
+    offset += lastLength;
+  }
+  function writeFloat64(value) {
+    write(ensureSpace(8).setFloat64(offset, value));
+  }
+  function writeUint8(value) {
+    write(ensureSpace(1).setUint8(offset, value));
+  }
+  function writeUint8Array(value) {
+    var dataView = ensureSpace(value.length);
+    for (var i = 0; i < value.length; ++i)
+      dataView.setUint8(offset + i, value[i]);
+    write();
+  }
+  function writeUint16(value) {
+    write(ensureSpace(2).setUint16(offset, value));
+  }
+  function writeUint32(value) {
+    write(ensureSpace(4).setUint32(offset, value));
+  }
+  function writeUint64(value) {
+    var low = value % POW_2_32;
+    var high = (value - low) / POW_2_32;
+    var dataView = ensureSpace(8);
+    dataView.setUint32(offset, high);
+    dataView.setUint32(offset + 4, low);
+    write();
+  }
+  function writeTypeAndLength(type, length) {
+    if (length < 24) {
+      writeUint8(type << 5 | length);
+    } else if (length < 0x100) {
+      writeUint8(type << 5 | 24);
+      writeUint8(length);
+    } else if (length < 0x10000) {
+      writeUint8(type << 5 | 25);
+      writeUint16(length);
+    } else if (length < 0x100000000) {
+      writeUint8(type << 5 | 26);
+      writeUint32(length);
+    } else {
+      writeUint8(type << 5 | 27);
+      writeUint64(length);
+    }
+  }
+  
+  function encodeItem(value) {
+    var i;
+
+    if (value === false)
+      return writeUint8(0xf4);
+    if (value === true)
+      return writeUint8(0xf5);
+    if (value === null)
+      return writeUint8(0xf6);
+    if (value === undefined)
+      return writeUint8(0xf7);
+  
+    switch (typeof value) {
+      case "number":
+        if (Math.floor(value) === value) {
+          if (0 <= value && value <= POW_2_53)
+            return writeTypeAndLength(0, value);
+          if (-POW_2_53 <= value && value < 0)
+            return writeTypeAndLength(1, -(value + 1));
+        }
+        writeUint8(0xfb);
+        return writeFloat64(value);
+
+      case "string":
+        var utf8data = [];
+        for (i = 0; i < value.length; ++i) {
+          var charCode = value.charCodeAt(i);
+          if (charCode < 0x80) {
+            utf8data.push(charCode);
+          } else if (charCode < 0x800) {
+            utf8data.push(0xc0 | charCode >> 6);
+            utf8data.push(0x80 | charCode & 0x3f);
+          } else if (charCode < 0xd800) {
+            utf8data.push(0xe0 | charCode >> 12);
+            utf8data.push(0x80 | (charCode >> 6)  & 0x3f);
+            utf8data.push(0x80 | charCode & 0x3f);
+          } else {
+            charCode = (charCode & 0x3ff) << 10;
+            charCode |= value.charCodeAt(++i) & 0x3ff;
+            charCode += 0x10000;
+
+            utf8data.push(0xf0 | charCode >> 18);
+            utf8data.push(0x80 | (charCode >> 12)  & 0x3f);
+            utf8data.push(0x80 | (charCode >> 6)  & 0x3f);
+            utf8data.push(0x80 | charCode & 0x3f);
+          }
+        }
+
+        writeTypeAndLength(3, utf8data.length);
+        return writeUint8Array(utf8data);
+
+      default:
+        var length;
+        if (Array.isArray(value)) {
+          length = value.length;
+          writeTypeAndLength(4, length);
+          for (i = 0; i < length; ++i)
+            encodeItem(value[i]);
+        } else if (value instanceof Uint8Array) {
+          writeTypeAndLength(2, value.length);
+          writeUint8Array(value);
+        } else {
+          var keys = Object.keys(value);
+          length = keys.length;
+          writeTypeAndLength(5, length);
+          for (i = 0; i < length; ++i) {
+            var key = keys[i];
+            encodeItem(key);
+            encodeItem(value[key]);
+          }
+        }
+    }
+  }
+  
+  encodeItem(value);
+
+  if ("slice" in data)
+    return data.slice(0, offset);
+  
+  var ret = new ArrayBuffer(offset);
+  var retView = new DataView(ret);
+  for (var i = 0; i < offset; ++i)
+    retView.setUint8(i, dataView.getUint8(i));
+  return ret;
+}
+
+function decode(data, tagger, simpleValue) {
+  var dataView = new DataView(data);
+  var offset = 0;
+  
+  if (typeof tagger !== "function")
+    tagger = function(value) { return value; };
+  if (typeof simpleValue !== "function")
+    simpleValue = function() { return undefined; };
+
+  function read(value, length) {
+    offset += length;
+    return value;
+  }
+  function readArrayBuffer(length) {
+    return read(new Uint8Array(data, offset, length), length);
+  }
+  function readFloat16() {
+    var tempArrayBuffer = new ArrayBuffer(4);
+    var tempDataView = new DataView(tempArrayBuffer);
+    var value = readUint16();
+
+    var sign = value & 0x8000;
+    var exponent = value & 0x7c00;
+    var fraction = value & 0x03ff;
+    
+    if (exponent === 0x7c00)
+      exponent = 0xff << 10;
+    else if (exponent !== 0)
+      exponent += (127 - 15) << 10;
+    else if (fraction !== 0)
+      return fraction * POW_2_24;
+    
+    tempDataView.setUint32(0, sign << 16 | exponent << 13 | fraction << 13);
+    return tempDataView.getFloat32(0);
+  }
+  function readFloat32() {
+    return read(dataView.getFloat32(offset), 4);
+  }
+  function readFloat64() {
+    return read(dataView.getFloat64(offset), 8);
+  }
+  function readUint8() {
+    return read(dataView.getUint8(offset), 1);
+  }
+  function readUint16() {
+    return read(dataView.getUint16(offset), 2);
+  }
+  function readUint32() {
+    return read(dataView.getUint32(offset), 4);
+  }
+  function readUint64() {
+    return readUint32() * POW_2_32 + readUint32();
+  }
+  function readBreak() {
+    if (dataView.getUint8(offset) !== 0xff)
+      return false;
+    offset += 1;
+    return true;
+  }
+  function readLength(additionalInformation) {
+    if (additionalInformation < 24)
+      return additionalInformation;
+    if (additionalInformation === 24)
+      return readUint8();
+    if (additionalInformation === 25)
+      return readUint16();
+    if (additionalInformation === 26)
+      return readUint32();
+    if (additionalInformation === 27)
+      return readUint64();
+    if (additionalInformation === 31)
+      return -1;
+    throw "Invalid length encoding";
+  }
+  function readIndefiniteStringLength(majorType) {
+    var initialByte = readUint8();
+    if (initialByte === 0xff)
+      return -1;
+    var length = readLength(initialByte & 0x1f);
+    if (length < 0 || (initialByte >> 5) !== majorType)
+      throw "Invalid indefinite length element";
+    return length;
+  }
+
+  function appendUtf16data(utf16data, length) {
+    for (var i = 0; i < length; ++i) {
+      var value = readUint8();
+      if (value & 0x80) {
+        if (value < 0xe0) {
+          value = (value & 0x1f) <<  6
+                | (readUint8() & 0x3f);
+          length -= 1;
+        } else if (value < 0xf0) {
+          value = (value & 0x0f) << 12
+                | (readUint8() & 0x3f) << 6
+                | (readUint8() & 0x3f);
+          length -= 2;
+        } else {
+          value = (value & 0x0f) << 18
+                | (readUint8() & 0x3f) << 12
+                | (readUint8() & 0x3f) << 6
+                | (readUint8() & 0x3f);
+          length -= 3;
+        }
+      }
+
+      if (value < 0x10000) {
+        utf16data.push(value);
+      } else {
+        value -= 0x10000;
+        utf16data.push(0xd800 | (value >> 10));
+        utf16data.push(0xdc00 | (value & 0x3ff));
+      }
+    }
+  }
+
+  function decodeItem() {
+    var initialByte = readUint8();
+    var majorType = initialByte >> 5;
+    var additionalInformation = initialByte & 0x1f;
+    var i;
+    var length;
+
+    if (majorType === 7) {
+      switch (additionalInformation) {
+        case 25:
+          return readFloat16();
+        case 26:
+          return readFloat32();
+        case 27:
+          return readFloat64();
+      }
+    }
+
+    length = readLength(additionalInformation);
+    if (length < 0 && (majorType < 2 || 6 < majorType))
+      throw "Invalid length";
+
+    switch (majorType) {
+      case 0:
+        return length;
+      case 1:
+        return -1 - length;
+      case 2:
+        if (length < 0) {
+          var elements = [];
+          var fullArrayLength = 0;
+          while ((length = readIndefiniteStringLength(majorType)) >= 0) {
+            fullArrayLength += length;
+            elements.push(readArrayBuffer(length));
+          }
+          var fullArray = new Uint8Array(fullArrayLength);
+          var fullArrayOffset = 0;
+          for (i = 0; i < elements.length; ++i) {
+            fullArray.set(elements[i], fullArrayOffset);
+            fullArrayOffset += elements[i].length;
+          }
+          return fullArray;
+        }
+        return readArrayBuffer(length);
+      case 3:
+        var utf16data = [];
+        if (length < 0) {
+          while ((length = readIndefiniteStringLength(majorType)) >= 0)
+            appendUtf16data(utf16data, length);
+        } else
+          appendUtf16data(utf16data, length);
+        return String.fromCharCode.apply(null, utf16data);
+      case 4:
+        var retArray;
+        if (length < 0) {
+          retArray = [];
+          while (!readBreak())
+            retArray.push(decodeItem());
+        } else {
+          retArray = new Array(length);
+          for (i = 0; i < length; ++i)
+            retArray[i] = decodeItem();
+        }
+        return retArray;
+      case 5:
+        var retObject = {};
+        for (i = 0; i < length || length < 0 && !readBreak(); ++i) {
+          var key = decodeItem();
+          retObject[key] = decodeItem();
+        }
+        return retObject;
+      case 6:
+        return tagger(decodeItem(), length);
+      case 7:
+        switch (length) {
+          case 20:
+            return false;
+          case 21:
+            return true;
+          case 22:
+            return null;
+          case 23:
+            return undefined;
+          default:
+            return simpleValue(length);
+        }
+    }
+  }
+
+  var ret = decodeItem();
+  if (offset !== data.byteLength)
+    throw "Remaining bytes";
+  return ret;
+}
+
+var obj = { encode: encode, decode: decode };
+
+if (typeof define === "function" && define.amd)
+  define("cbor/cbor", obj);
+else if (typeof module !== 'undefined' && module.exports)
+  module.exports = obj;
+else if (!global.CBOR)
+  global.CBOR = obj;
+
+})(this);
+
+},{}],2:[function(require,module,exports){
 /*!
  * EventEmitter2
  * https://github.com/hij1nx/EventEmitter2
@@ -722,7 +1130,7 @@
   }
 }();
 
-},{}],2:[function(require,module,exports){
+},{}],3:[function(require,module,exports){
 /*
 object-assign
 (c) Sindre Sorhus
@@ -814,7 +1222,7 @@ module.exports = shouldUseNative() ? Object.assign : function (target, source) {
 	return to;
 };
 
-},{}],3:[function(require,module,exports){
+},{}],4:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Russell Toris - rctoris@wpi.edu
@@ -844,11 +1252,11 @@ assign(ROSLIB, require('./urdf'));
 
 module.exports = ROSLIB;
 
-},{"./actionlib":9,"./core":18,"./math":23,"./tf":26,"./urdf":38,"object-assign":2}],4:[function(require,module,exports){
+},{"./actionlib":10,"./core":19,"./math":24,"./tf":27,"./urdf":39,"object-assign":3}],5:[function(require,module,exports){
 (function (global){
 global.ROSLIB = require('./RosLib');
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./RosLib":3}],5:[function(require,module,exports){
+},{"./RosLib":4}],6:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Russell Toris - rctoris@wpi.edu
@@ -993,7 +1401,7 @@ ActionClient.prototype.dispose = function() {
 
 module.exports = ActionClient;
 
-},{"../core/Message":10,"../core/Topic":17,"eventemitter2":1}],6:[function(require,module,exports){
+},{"../core/Message":11,"../core/Topic":18,"eventemitter2":2}],7:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Justin Young - justin@oodar.com.au
@@ -1082,7 +1490,7 @@ ActionListener.prototype.__proto__ = EventEmitter2.prototype;
 
 module.exports = ActionListener;
 
-},{"../core/Message":10,"../core/Topic":17,"eventemitter2":1}],7:[function(require,module,exports){
+},{"../core/Message":11,"../core/Topic":18,"eventemitter2":2}],8:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Russell Toris - rctoris@wpi.edu
@@ -1172,7 +1580,7 @@ Goal.prototype.cancel = function() {
 };
 
 module.exports = Goal;
-},{"../core/Message":10,"eventemitter2":1}],8:[function(require,module,exports){
+},{"../core/Message":11,"eventemitter2":2}],9:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Laura Lindzey - lindzey@gmail.com
@@ -1381,7 +1789,7 @@ SimpleActionServer.prototype.setPreempted = function() {
 };
 
 module.exports = SimpleActionServer;
-},{"../core/Message":10,"../core/Topic":17,"eventemitter2":1}],9:[function(require,module,exports){
+},{"../core/Message":11,"../core/Topic":18,"eventemitter2":2}],10:[function(require,module,exports){
 var Ros = require('../core/Ros');
 var mixin = require('../mixin');
 
@@ -1394,7 +1802,7 @@ var action = module.exports = {
 
 mixin(Ros, ['ActionClient', 'SimpleActionServer'], action);
 
-},{"../core/Ros":12,"../mixin":24,"./ActionClient":5,"./ActionListener":6,"./Goal":7,"./SimpleActionServer":8}],10:[function(require,module,exports){
+},{"../core/Ros":13,"../mixin":25,"./ActionClient":6,"./ActionListener":7,"./Goal":8,"./SimpleActionServer":9}],11:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - baalexander@gmail.com
@@ -1413,7 +1821,7 @@ function Message(values) {
 }
 
 module.exports = Message;
-},{"object-assign":2}],11:[function(require,module,exports){
+},{"object-assign":3}],12:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - baalexander@gmail.com
@@ -1497,7 +1905,7 @@ Param.prototype.delete = function(callback) {
 };
 
 module.exports = Param;
-},{"./Service":13,"./ServiceRequest":14}],12:[function(require,module,exports){
+},{"./Service":14,"./ServiceRequest":15}],13:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - baalexander@gmail.com
@@ -2120,7 +2528,7 @@ Ros.prototype.decodeTypeDefs = function(defs) {
 
 module.exports = Ros;
 
-},{"./Service":13,"./ServiceRequest":14,"./SocketAdapter.js":16,"eventemitter2":1,"object-assign":2,"ws":40}],13:[function(require,module,exports){
+},{"./Service":14,"./ServiceRequest":15,"./SocketAdapter.js":17,"eventemitter2":2,"object-assign":3,"ws":41}],14:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - baalexander@gmail.com
@@ -2245,7 +2653,7 @@ Service.prototype._serviceResponse = function(rosbridgeRequest) {
 
 module.exports = Service;
 
-},{"./ServiceRequest":14,"./ServiceResponse":15,"eventemitter2":1}],14:[function(require,module,exports){
+},{"./ServiceRequest":15,"./ServiceResponse":16,"eventemitter2":2}],15:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - balexander@willowgarage.com
@@ -2264,7 +2672,7 @@ function ServiceRequest(values) {
 }
 
 module.exports = ServiceRequest;
-},{"object-assign":2}],15:[function(require,module,exports){
+},{"object-assign":3}],16:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - balexander@willowgarage.com
@@ -2283,7 +2691,7 @@ function ServiceResponse(values) {
 }
 
 module.exports = ServiceResponse;
-},{"object-assign":2}],16:[function(require,module,exports){
+},{"object-assign":3}],17:[function(require,module,exports){
 /**
  * Socket event handling utilities for handling events on either
  * WebSocket and TCP sockets
@@ -2295,15 +2703,13 @@ module.exports = ServiceResponse;
 'use strict';
 
 var decompressPng = require('../util/decompressPng');
-var CBOR = require('../util/cbor');
+var CBOR = require('cbor-js');
+var typedArrayTagger = require('../util/cborTypedArrayTags');
 var WebSocket = require('ws');
 var BSON = null;
 if(typeof bson !== 'undefined'){
     BSON = bson().BSON;
 }
-
-var perfStart;
-var perfSamples = [];
 
 /**
  * Events listeners for a WebSocket or TCP socket to a JavaScript
@@ -2316,19 +2722,6 @@ var perfSamples = [];
 function SocketAdapter(client) {
   function handleMessage(message) {
     if (message.op === 'publish') {
-      perfSamples.push(window.performance.now() - perfStart);
-      if (perfSamples.length === 100) {
-        var sum = perfSamples.reduce(function(a, b) { return a + b; });
-        var avg = sum / 100;
-        console.log('decode', avg, 'ms');
-        var report = document.createElement('p');
-        report.style.position = 'fixed';
-        report.style.color = 'red';
-        report.style.top = '50px';
-        report.style.right = '0px';
-        report.innerText = '100 decoded avg ' + avg;
-        document.body.appendChild(report);
-      }
       client.emit(message.topic, message.msg);
     } else if (message.op === 'service_response') {
       client.emit(message.id, message);
@@ -2343,7 +2736,7 @@ function SocketAdapter(client) {
     }
   }
 
-  function handleCompression(message, callback) {
+  function handlePng(message, callback) {
     if (message.op === 'png') {
       decompressPng(message.data, callback);
     } else {
@@ -2405,18 +2798,16 @@ function SocketAdapter(client) {
      * @memberof SocketAdapter
      */
     onmessage: function onMessage(data) {
-      /*
       if (typeof Blob !== 'undefined' && data.data instanceof Blob) {
         decodeBSON(data.data, function (message) {
-          handleCompression(message, handleMessage);
+          handlePng(message, handleMessage);
         });
-      */
-      perfStart = window.performance.now();
-      if (data.data instanceof ArrayBuffer) {
-        handleMessage(CBOR.decode(data.data));
+      } else if (data.data instanceof ArrayBuffer) {
+        var decoded = CBOR.decode(data.data, typedArrayTagger);
+        handleMessage(decoded);
       } else {
         var message = JSON.parse(typeof data === 'string' ? data : data.data);
-        handleCompression(message, handleMessage);
+        handlePng(message, handleMessage);
       }
     }
   };
@@ -2424,7 +2815,7 @@ function SocketAdapter(client) {
 
 module.exports = SocketAdapter;
 
-},{"../util/cbor":39,"../util/decompressPng":42,"ws":40}],17:[function(require,module,exports){
+},{"../util/cborTypedArrayTags":40,"../util/decompressPng":43,"cbor-js":1,"ws":41}],18:[function(require,module,exports){
 /**
  * @fileoverview
  * @author Brandon Alexander - baalexander@gmail.com
@@ -2632,7 +3023,7 @@ Topic.prototype.publish = function(message) {
 
 module.exports = Topic;
 
-},{"./Message":10,"eventemitter2":1}],18:[function(require,module,exports){
+},{"./Message":11,"eventemitter2":2}],19:[function(require,module,exports){
 var mixin = require('../mixin');
 
 var core = module.exports = {
@@ -2647,7 +3038,7 @@ var core = module.exports = {
 
 mixin(core.Ros, ['Param', 'Service', 'Topic'], core);
 
-},{"../mixin":24,"./Message":10,"./Param":11,"./Ros":12,"./Service":13,"./ServiceRequest":14,"./ServiceResponse":15,"./Topic":17}],19:[function(require,module,exports){
+},{"../mixin":25,"./Message":11,"./Param":12,"./Ros":13,"./Service":14,"./ServiceRequest":15,"./ServiceResponse":16,"./Topic":18}],20:[function(require,module,exports){
 /**
  * @fileoverview
  * @author David Gossow - dgossow@willowgarage.com
@@ -2693,8 +3084,34 @@ Pose.prototype.clone = function() {
   return new Pose(this);
 };
 
+/**
+ * Multiplies this pose with another pose without altering this pose.
+ *
+ * @returns Result of multiplication.
+ */
+Pose.prototype.multiply = function(pose) {
+  var p = pose.clone();
+  p.applyTransform({ rotation: this.orientation, translation: this.position });
+  return p;
+};
+
+/**
+ * Computes the inverse of this pose.
+ *
+ * @returns Inverse of pose.
+ */
+Pose.prototype.getInverse = function() {
+  var inverse = this.clone();
+  inverse.orientation.invert();
+  inverse.position.multiplyQuaternion(inverse.orientation);
+  inverse.position.x *= -1;
+  inverse.position.y *= -1;
+  inverse.position.z *= -1;
+  return inverse;
+};
+
 module.exports = Pose;
-},{"./Quaternion":20,"./Vector3":22}],20:[function(require,module,exports){
+},{"./Quaternion":21,"./Vector3":23}],21:[function(require,module,exports){
 /**
  * @fileoverview
  * @author David Gossow - dgossow@willowgarage.com
@@ -2788,7 +3205,7 @@ Quaternion.prototype.clone = function() {
 
 module.exports = Quaternion;
 
-},{}],21:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 /**
  * @fileoverview
  * @author David Gossow - dgossow@willowgarage.com
@@ -2822,7 +3239,7 @@ Transform.prototype.clone = function() {
 };
 
 module.exports = Transform;
-},{"./Quaternion":20,"./Vector3":22}],22:[function(require,module,exports){
+},{"./Quaternion":21,"./Vector3":23}],23:[function(require,module,exports){
 /**
  * @fileoverview
  * @author David Gossow - dgossow@willowgarage.com
@@ -2891,7 +3308,7 @@ Vector3.prototype.clone = function() {
 };
 
 module.exports = Vector3;
-},{}],23:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 module.exports = {
     Pose: require('./Pose'),
     Quaternion: require('./Quaternion'),
@@ -2899,7 +3316,7 @@ module.exports = {
     Vector3: require('./Vector3')
 };
 
-},{"./Pose":19,"./Quaternion":20,"./Transform":21,"./Vector3":22}],24:[function(require,module,exports){
+},{"./Pose":20,"./Quaternion":21,"./Transform":22,"./Vector3":23}],25:[function(require,module,exports){
 /**
  * Mixin a feature to the core/Ros prototype.
  * For example, mixin(Ros, ['Topic'], {Topic: <Topic>})
@@ -2918,7 +3335,7 @@ module.exports = function(Ros, classes, features) {
     });
 };
 
-},{}],25:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 /**
  * @fileoverview
  * @author David Gossow - dgossow@willowgarage.com
@@ -3139,7 +3556,7 @@ TFClient.prototype.dispose = function() {
 
 module.exports = TFClient;
 
-},{"../actionlib/ActionClient":5,"../actionlib/Goal":7,"../core/Service.js":13,"../core/ServiceRequest.js":14,"../math/Transform":21}],26:[function(require,module,exports){
+},{"../actionlib/ActionClient":6,"../actionlib/Goal":8,"../core/Service.js":14,"../core/ServiceRequest.js":15,"../math/Transform":22}],27:[function(require,module,exports){
 var Ros = require('../core/Ros');
 var mixin = require('../mixin');
 
@@ -3148,7 +3565,7 @@ var tf = module.exports = {
 };
 
 mixin(Ros, ['TFClient'], tf);
-},{"../core/Ros":12,"../mixin":24,"./TFClient":25}],27:[function(require,module,exports){
+},{"../core/Ros":13,"../mixin":25,"./TFClient":26}],28:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3179,7 +3596,7 @@ function UrdfBox(options) {
 }
 
 module.exports = UrdfBox;
-},{"../math/Vector3":22,"./UrdfTypes":36}],28:[function(require,module,exports){
+},{"../math/Vector3":23,"./UrdfTypes":37}],29:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3203,7 +3620,7 @@ function UrdfColor(options) {
 }
 
 module.exports = UrdfColor;
-},{}],29:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3226,11 +3643,15 @@ function UrdfCylinder(options) {
 }
 
 module.exports = UrdfCylinder;
-},{"./UrdfTypes":36}],30:[function(require,module,exports){
+},{"./UrdfTypes":37}],31:[function(require,module,exports){
 /**
  * @fileOverview
  * @author David V. Lu!!  davidvlu@gmail.com
  */
+
+var Pose = require('../math/Pose');
+var Vector3 = require('../math/Vector3');
+var Quaternion = require('../math/Quaternion');
 
 /**
  * A Joint element in a URDF.
@@ -3258,11 +3679,64 @@ function UrdfJoint(options) {
     this.minval = parseFloat( limits[0].getAttribute('lower') );
     this.maxval = parseFloat( limits[0].getAttribute('upper') );
   }
+
+  // Origin
+  var origins = options.xml.getElementsByTagName('origin');
+  if (origins.length === 0) {
+    // use the identity as the default
+    this.origin = new Pose();
+  } else {
+    // Check the XYZ
+    var xyz = origins[0].getAttribute('xyz');
+    var position = new Vector3();
+    if (xyz) {
+      xyz = xyz.split(' ');
+      position = new Vector3({
+        x : parseFloat(xyz[0]),
+        y : parseFloat(xyz[1]),
+        z : parseFloat(xyz[2])
+      });
+    }
+
+    // Check the RPY
+    var rpy = origins[0].getAttribute('rpy');
+    var orientation = new Quaternion();
+    if (rpy) {
+      rpy = rpy.split(' ');
+      // Convert from RPY
+      var roll = parseFloat(rpy[0]);
+      var pitch = parseFloat(rpy[1]);
+      var yaw = parseFloat(rpy[2]);
+      var phi = roll / 2.0;
+      var the = pitch / 2.0;
+      var psi = yaw / 2.0;
+      var x = Math.sin(phi) * Math.cos(the) * Math.cos(psi) - Math.cos(phi) * Math.sin(the)
+          * Math.sin(psi);
+      var y = Math.cos(phi) * Math.sin(the) * Math.cos(psi) + Math.sin(phi) * Math.cos(the)
+          * Math.sin(psi);
+      var z = Math.cos(phi) * Math.cos(the) * Math.sin(psi) - Math.sin(phi) * Math.sin(the)
+          * Math.cos(psi);
+      var w = Math.cos(phi) * Math.cos(the) * Math.cos(psi) + Math.sin(phi) * Math.sin(the)
+          * Math.sin(psi);
+
+      orientation = new Quaternion({
+        x : x,
+        y : y,
+        z : z,
+        w : w
+      });
+      orientation.normalize();
+    }
+    this.origin = new Pose({
+      position : position,
+      orientation : orientation
+    });
+  }
 }
 
 module.exports = UrdfJoint;
 
-},{}],31:[function(require,module,exports){
+},{"../math/Pose":20,"../math/Quaternion":21,"../math/Vector3":23}],32:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3291,7 +3765,7 @@ function UrdfLink(options) {
 }
 
 module.exports = UrdfLink;
-},{"./UrdfVisual":37}],32:[function(require,module,exports){
+},{"./UrdfVisual":38}],33:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3341,7 +3815,7 @@ UrdfMaterial.prototype.assign = function(obj) {
 
 module.exports = UrdfMaterial;
 
-},{"./UrdfColor":28,"object-assign":2}],33:[function(require,module,exports){
+},{"./UrdfColor":29,"object-assign":3}],34:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3378,7 +3852,7 @@ function UrdfMesh(options) {
 }
 
 module.exports = UrdfMesh;
-},{"../math/Vector3":22,"./UrdfTypes":36}],34:[function(require,module,exports){
+},{"../math/Vector3":23,"./UrdfTypes":37}],35:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3475,7 +3949,7 @@ function UrdfModel(options) {
 
 module.exports = UrdfModel;
 
-},{"./UrdfJoint":30,"./UrdfLink":31,"./UrdfMaterial":32,"xmldom":43}],35:[function(require,module,exports){
+},{"./UrdfJoint":31,"./UrdfLink":32,"./UrdfMaterial":33,"xmldom":44}],36:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3497,7 +3971,7 @@ function UrdfSphere(options) {
 }
 
 module.exports = UrdfSphere;
-},{"./UrdfTypes":36}],36:[function(require,module,exports){
+},{"./UrdfTypes":37}],37:[function(require,module,exports){
 module.exports = {
 	URDF_SPHERE : 0,
 	URDF_BOX : 1,
@@ -3505,7 +3979,7 @@ module.exports = {
 	URDF_MESH : 3
 };
 
-},{}],37:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 /**
  * @fileOverview 
  * @author Benjamin Pitzer - ben.pitzer@gmail.com
@@ -3634,7 +4108,7 @@ function UrdfVisual(options) {
 }
 
 module.exports = UrdfVisual;
-},{"../math/Pose":19,"../math/Quaternion":20,"../math/Vector3":22,"./UrdfBox":27,"./UrdfCylinder":29,"./UrdfMaterial":32,"./UrdfMesh":33,"./UrdfSphere":35}],38:[function(require,module,exports){
+},{"../math/Pose":20,"../math/Quaternion":21,"../math/Vector3":23,"./UrdfBox":28,"./UrdfCylinder":30,"./UrdfMaterial":33,"./UrdfMesh":34,"./UrdfSphere":36}],39:[function(require,module,exports){
 module.exports = require('object-assign')({
     UrdfBox: require('./UrdfBox'),
     UrdfColor: require('./UrdfColor'),
@@ -3647,493 +4121,132 @@ module.exports = require('object-assign')({
     UrdfVisual: require('./UrdfVisual')
 }, require('./UrdfTypes'));
 
-},{"./UrdfBox":27,"./UrdfColor":28,"./UrdfCylinder":29,"./UrdfLink":31,"./UrdfMaterial":32,"./UrdfMesh":33,"./UrdfModel":34,"./UrdfSphere":35,"./UrdfTypes":36,"./UrdfVisual":37,"object-assign":2}],39:[function(require,module,exports){
-/*
- * The MIT License (MIT)
- *
- * Copyright (c) 2014-2016 Patrick Gansterer <paroga@paroga.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
+},{"./UrdfBox":28,"./UrdfColor":29,"./UrdfCylinder":30,"./UrdfLink":32,"./UrdfMaterial":33,"./UrdfMesh":34,"./UrdfModel":35,"./UrdfSphere":36,"./UrdfTypes":37,"./UrdfVisual":38,"object-assign":3}],40:[function(require,module,exports){
 'use strict';
 
-var POW_2_24 = 5.960464477539063e-8,
-    POW_2_32 = 4294967296,
-    POW_2_53 = 9007199254740992;
+var UPPER32 = Math.pow(2, 32);
 
-var typedArrayTags = {
-  Uint8Array: 64,
-  Uint16Array: 65,
-  Uint32Array: 66,
-  //Uint8ClampedArray: 68,
-  // Uint16Array: 69, // big-endian
-  // Uint32Array: 70, // big-endian
-  Int8Array: 72,
-  Int16Array: 73,
-  Int32Array: 74,
-  Float32Array: 81,
-  Float64Array: 82
-  // Float32Array: 85, // big-endian
-  // Float64Array: 86  // big-endian
-};
-
-var taggedArrayTypes = {
-  64: Uint8Array,
-  65: Uint16Array,
-  66: Uint32Array,
-  //68: Uint8ClampedArray,
-  72: Int8Array,
-  73: Int16Array,
-  74: Int32Array,
-  81: Float32Array,
-  82: Float64Array
-};
-
-function encode(value) {
-  var data = new ArrayBuffer(256);
-  var dataView = new DataView(data);
-  var byteView = new Uint8Array(data);
-  var lastLength;
-  var offset = 0;
-
-  function prepareWrite(length) {
-    var newByteLength = data.byteLength;
-    var requiredLength = offset + length;
-    while (newByteLength < requiredLength) {
-      newByteLength <<= 1;
-    }
-    if (newByteLength !== data.byteLength) {
-      var oldDataView = dataView;
-      data = new ArrayBuffer(newByteLength);
-      dataView = new DataView(data);
-      byteView = new Uint8Array(data);
-      var uint32count = (offset + 3) >> 2;
-      for (var i = 0; i < uint32count; ++i) {
-        dataView.setUint32(i << 2, oldDataView.getUint32(i << 2));
-      }
-    }
-
-    lastLength = length;
-    return dataView;
+var warnedPrecision = false;
+function warnPrecision() {
+  if (!warnedPrecision) {
+    warnedPrecision = true;
+    console.warn('CBOR 64-bit integer array values may lose precision. No further warnings.');
   }
-  function commitWrite() {
-    offset += lastLength;
-  }
-  function writeFloat64(value) {
-    commitWrite(prepareWrite(8).setFloat64(offset, value));
-  }
-  function writeUint8(value) {
-    commitWrite(prepareWrite(1).setUint8(offset, value));
-  }
-  function writeUint8Array(value) {
-    prepareWrite(value.length);
-    byteView.set(value, offset);
-    commitWrite();
-  }
-  function writeUint16(value) {
-    commitWrite(prepareWrite(2).setUint16(offset, value));
-  }
-  function writeUint32(value) {
-    commitWrite(prepareWrite(4).setUint32(offset, value));
-  }
-  function writeUint64(value) {
-    var low = value % POW_2_32;
-    var high = (value - low) / POW_2_32;
-    var dataView = prepareWrite(8);
-    dataView.setUint32(offset, high);
-    dataView.setUint32(offset + 4, low);
-    commitWrite();
-  }
-  function writeTypeAndLength(type, length) {
-    if (length < 24) {
-      writeUint8(type << 5 | length);
-    } else if (length < 0x100) {
-      writeUint8(type << 5 | 24);
-      writeUint8(length);
-    } else if (length < 0x10000) {
-      writeUint8(type << 5 | 25);
-      writeUint16(length);
-    } else if (length < 0x100000000) {
-      writeUint8(type << 5 | 26);
-      writeUint32(length);
-    } else {
-      writeUint8(type << 5 | 27);
-      writeUint64(length);
-    }
-  }
-
-  function encodeItem(value) {
-    var i;
-
-    if (value === false) {
-      return writeUint8(0xf4);
-    }
-    if (value === true) {
-      return writeUint8(0xf5);
-    }
-    if (value === null) {
-      return writeUint8(0xf6);
-    }
-    if (value === undefined) {
-      return writeUint8(0xf7);
-    }
-
-    switch (typeof value) {
-      case 'number':
-        if (Math.floor(value) === value) {
-          if (0 <= value && value <= POW_2_53) {
-            return writeTypeAndLength(0, value);
-          }
-          if (-POW_2_53 <= value && value < 0) {
-            return writeTypeAndLength(1, -(value + 1));
-          }
-        }
-        writeUint8(0xfb);
-        return writeFloat64(value);
-
-      case 'string':
-        var utf8data = [];
-        for (i = 0; i < value.length; ++i) {
-          var charCode = value.charCodeAt(i);
-          if (charCode < 0x80) {
-            utf8data.push(charCode);
-          } else if (charCode < 0x800) {
-            utf8data.push(0xc0 | charCode >> 6);
-            utf8data.push(0x80 | charCode & 0x3f);
-          } else if (charCode < 0xd800) {
-            utf8data.push(0xe0 | charCode >> 12);
-            utf8data.push(0x80 | (charCode >> 6)  & 0x3f);
-            utf8data.push(0x80 | charCode & 0x3f);
-          } else {
-            charCode = (charCode & 0x3ff) << 10;
-            charCode |= value.charCodeAt(++i) & 0x3ff;
-            charCode += 0x10000;
-
-            utf8data.push(0xf0 | charCode >> 18);
-            utf8data.push(0x80 | (charCode >> 12)  & 0x3f);
-            utf8data.push(0x80 | (charCode >> 6)  & 0x3f);
-            utf8data.push(0x80 | charCode & 0x3f);
-          }
-        }
-
-        writeTypeAndLength(3, utf8data.length);
-        return writeUint8Array(utf8data);
-
-      default:
-        var length;
-        if (Array.isArray(value)) {
-          length = value.length;
-          writeTypeAndLength(4, length);
-          for (i = 0; i < length; ++i) {
-            encodeItem(value[i]);
-          }
-        } else if (value instanceof Uint8Array) {
-          writeTypeAndLength(2, value.length);
-          writeUint8Array(value);
-        } else if (ArrayBuffer.isView(value)) {
-          length = value.byteLength;
-          var view = new Uint8Array(value.buffer);
-          var t = value.constructor;
-          var tag = typedArrayTags[t];
-          writeTypeAndLength(6, tag);
-          writeTypeAndLength(2, length);
-          writeUint8Array(view);
-        } else {
-          var keys = Object.keys(value);
-          length = keys.length;
-          writeTypeAndLength(5, length);
-          for (i = 0; i < length; ++i) {
-            var key = keys[i];
-            encodeItem(key);
-            encodeItem(value[key]);
-          }
-        }
-    }
-  }
-
-  encodeItem(value);
-
-  if ('slice' in data) {
-    return data.slice(0, offset);
-  }
-
-  var ret = new ArrayBuffer(offset);
-  var retView = new DataView(ret);
-  for (var i = 0; i < offset; ++i) {
-    retView.setUint8(i, dataView.getUint8(i));
-  }
-  return ret;
 }
 
-function defaultTagger(data, tag) {
-  if (tag in taggedArrayTypes) {
-    return new taggedArrayTypes[tag](data);
+/**
+ * Unpacks 64-bit unsigned integer from byte array.
+ * @param {Uint8Array} bytes
+*/
+function decodeUint64LE(bytes) {
+  warnPrecision();
+
+  var byteLen = bytes.byteLength;
+  var arrLen = byteLen / 8;
+
+  var buffer = bytes.buffer.slice(-byteLen);
+  var uint32View = new Uint32Array(buffer);
+
+  var arr = new Array(arrLen);
+  for (var i = 0; i < arrLen; i++) {
+    var si = i * 2;
+    var lo = uint32View[si];
+    var hi = uint32View[si+1];
+    arr[i] = lo + UPPER32 * hi;
+  }
+
+  return arr;
+}
+
+/**
+ * Unpacks 64-bit signed integer from byte array.
+ * @param {Uint8Array} bytes
+*/
+function decodeInt64LE(bytes) {
+  warnPrecision();
+
+  var byteLen = bytes.byteLength;
+  var arrLen = byteLen / 8;
+
+  var buffer = bytes.buffer.slice(-byteLen);
+  var uint32View = new Uint32Array(buffer);
+  var int32View = new Int32Array(buffer);
+
+  var arr = new Array(arrLen);
+  for (var i = 0; i < arrLen; i++) {
+    var si = i * 2;
+    var lo = uint32View[si];
+    var hi = int32View[si+1];
+    arr[i] = lo + UPPER32 * hi;
+  }
+
+  return arr;
+}
+
+/**
+ * Unpacks typed array from byte array.
+ * @param {Uint8Array} bytes
+ * @param {type} ArrayType - desired output array type
+*/
+function decodeNativeArray(bytes, ArrayType) {
+  var byteLen = bytes.byteLength;
+  var buffer = bytes.buffer.slice(-byteLen);
+  return new ArrayType(buffer);
+}
+
+/**
+ * Support a subset of draft CBOR typed array tags:
+ *   <https://tools.ietf.org/html/draft-ietf-cbor-array-tags-00>
+ * Only support little-endian tags for now.
+ */
+var nativeArrayTypes = {
+  64: Uint8Array,
+  69: Uint16Array,
+  70: Uint32Array,
+  72: Int8Array,
+  77: Int16Array,
+  78: Int32Array,
+  85: Float32Array,
+  86: Float64Array
+};
+
+/**
+ * We can also decode 64-bit integer arrays, since ROS has these types.
+ */
+var conversionArrayTypes = {
+  71: decodeUint64LE,
+  79: decodeInt64LE
+};
+
+/**
+ * Handles CBOR typed array tags during decoding.
+ * @param {Uint8Array} data
+ * @param {Number} tag
+ */
+function cborTypedArrayTagger(data, tag) {
+  if (tag in nativeArrayTypes) {
+    var arrayType = nativeArrayTypes[tag];
+    return decodeNativeArray(data, arrayType);
+  }
+  if (tag in conversionArrayTypes) {
+    return conversionArrayTypes[tag](data);
   }
   return data;
 }
 
-function decode(data, tagger, simpleValue) {
-  var dataView = new DataView(data);
-  var byteView = new Uint8Array(data);
-  var offset = 0;
-
-  if (typeof tagger !== 'function') {
-    tagger = defaultTagger;
-  }
-  if (typeof simpleValue !== 'function') {
-    simpleValue = function() { return undefined; };
-  }
-
-  function commitRead(length, value) {
-    offset += length;
-    return value;
-  }
-  function readArrayBuffer(length) {
-    return commitRead(length, byteView.subarray(offset, offset + length));
-  }
-  function readFloat16() {
-    var tempArrayBuffer = new ArrayBuffer(4);
-    var tempDataView = new DataView(tempArrayBuffer);
-    var value = readUint16();
-
-    var sign = value & 0x8000;
-    var exponent = value & 0x7c00;
-    var fraction = value & 0x03ff;
-
-    if (exponent === 0x7c00) {
-      exponent = 0xff << 10;
-    }
-    else if (exponent !== 0) {
-      exponent += (127 - 15) << 10;
-    }
-    else if (fraction !== 0) {
-      return (sign ? -1 : 1) * fraction * POW_2_24;
-    }
-
-    tempDataView.setUint32(0, sign << 16 | exponent << 13 | fraction << 13);
-    return tempDataView.getFloat32(0);
-  }
-  function readFloat32() {
-    return commitRead(4, dataView.getFloat32(offset));
-  }
-  function readFloat64() {
-    return commitRead(8, dataView.getFloat64(offset));
-  }
-  function readUint8() {
-    return commitRead(1, byteView[offset]);
-  }
-  function readUint16() {
-    return commitRead(2, dataView.getUint16(offset));
-  }
-  function readUint32() {
-    return commitRead(4, dataView.getUint32(offset));
-  }
-  function readUint64() {
-    return readUint32() * POW_2_32 + readUint32();
-  }
-  function readBreak() {
-    if (byteView[offset] !== 0xff) {
-      return false;
-    }
-    offset += 1;
-    return true;
-  }
-  function readLength(additionalInformation) {
-    if (additionalInformation < 24) {
-      return additionalInformation;
-    }
-    if (additionalInformation === 24) {
-      return readUint8();
-    }
-    if (additionalInformation === 25) {
-      return readUint16();
-    }
-    if (additionalInformation === 26) {
-      return readUint32();
-    }
-    if (additionalInformation === 27) {
-      return readUint64();
-    }
-    if (additionalInformation === 31) {
-      return -1;
-    }
-    throw 'Invalid length encoding';
-  }
-  function readIndefiniteStringLength(majorType) {
-    var initialByte = readUint8();
-    if (initialByte === 0xff) {
-      return -1;
-    }
-    var length = readLength(initialByte & 0x1f);
-    if (length < 0 || (initialByte >> 5) !== majorType) {
-      throw 'Invalid indefinite length element';
-    }
-    return length;
-  }
-
-  function appendUtf16Data(utf16data, length) {
-    for (var i = 0; i < length; ++i) {
-      var value = readUint8();
-      if (value & 0x80) {
-        if (value < 0xe0) {
-          value = (value & 0x1f) <<  6
-                | (readUint8() & 0x3f);
-          length -= 1;
-        } else if (value < 0xf0) {
-          value = (value & 0x0f) << 12
-                | (readUint8() & 0x3f) << 6
-                | (readUint8() & 0x3f);
-          length -= 2;
-        } else {
-          value = (value & 0x0f) << 18
-                | (readUint8() & 0x3f) << 12
-                | (readUint8() & 0x3f) << 6
-                | (readUint8() & 0x3f);
-          length -= 3;
-        }
-      }
-
-      if (value < 0x10000) {
-        utf16data.push(value);
-      } else {
-        value -= 0x10000;
-        utf16data.push(0xd800 | (value >> 10));
-        utf16data.push(0xdc00 | (value & 0x3ff));
-      }
-    }
-  }
-
-  function decodeItem() {
-    var initialByte = readUint8();
-    var majorType = initialByte >> 5;
-    var additionalInformation = initialByte & 0x1f;
-    var i;
-    var length;
-
-    if (majorType === 7) {
-      switch (additionalInformation) {
-        case 25:
-          return readFloat16();
-        case 26:
-          return readFloat32();
-        case 27:
-          return readFloat64();
-      }
-    }
-
-    length = readLength(additionalInformation);
-    if (length < 0 && (majorType < 2 || 6 < majorType)) {
-      throw 'Invalid length';
-    }
-
-    switch (majorType) {
-      case 0:
-        return length;
-      case 1:
-        return -1 - length;
-      case 2:
-        if (length < 0) {
-          var elements = [];
-          var fullArrayLength = 0;
-          while ((length = readIndefiniteStringLength(majorType)) >= 0) {
-            fullArrayLength += length;
-            elements.push(readArrayBuffer(length));
-          }
-          var fullArray = new Uint8Array(fullArrayLength);
-          var fullArrayOffset = 0;
-          for (i = 0; i < elements.length; ++i) {
-            fullArray.set(elements[i], fullArrayOffset);
-            fullArrayOffset += elements[i].length;
-          }
-          return fullArray;
-        }
-        return readArrayBuffer(length);
-      case 3:
-        var utf16data = [];
-        if (length < 0) {
-          while ((length = readIndefiniteStringLength(majorType)) >= 0) {
-            appendUtf16Data(utf16data, length);
-          }
-        } else {
-          appendUtf16Data(utf16data, length);
-        }
-        return String.fromCharCode.apply(null, utf16data);
-      case 4:
-        var retArray;
-        if (length < 0) {
-          retArray = [];
-          while (!readBreak()) {
-            retArray.push(decodeItem());
-          }
-        } else {
-          retArray = new Array(length);
-          for (i = 0; i < length; ++i) {
-            retArray[i] = decodeItem();
-          }
-        }
-        return retArray;
-      case 5:
-        var retObject = {};
-        for (i = 0; i < length || length < 0 && !readBreak(); ++i) {
-          var key = decodeItem();
-          retObject[key] = decodeItem();
-        }
-        return retObject;
-      case 6:
-        return tagger(decodeItem(), length);
-      case 7:
-        switch (length) {
-          case 20:
-            return false;
-          case 21:
-            return true;
-          case 22:
-            return null;
-          case 23:
-            return undefined;
-          default:
-            return simpleValue(length);
-        }
-    }
-  }
-
-  var ret = decodeItem();
-  if (offset !== data.byteLength) {
-    throw 'Remaining bytes';
-  }
-  return ret;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = cborTypedArrayTagger;
 }
 
-var obj = { encode: encode, decode: decode };
-
-module.exports = obj;
-
-},{}],40:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 module.exports = window.WebSocket;
 
-},{}],41:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 /* global document */
 module.exports = function Canvas() {
 	return document.createElement('canvas');
 };
-},{}],42:[function(require,module,exports){
+},{}],43:[function(require,module,exports){
 /**
  * @fileOverview
  * @author Graeme Yeates - github.com/megawac
@@ -4191,9 +4304,9 @@ function decompressPng(data, callback) {
 
 module.exports = decompressPng;
 
-},{"canvas":41}],43:[function(require,module,exports){
+},{"canvas":42}],44:[function(require,module,exports){
 exports.DOMImplementation = window.DOMImplementation;
 exports.XMLSerializer = window.XMLSerializer;
 exports.DOMParser = window.DOMParser;
 
-},{}]},{},[4]);
+},{}]},{},[5]);

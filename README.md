@@ -20,4 +20,4 @@ e.g.
 
 #### Change the compression type
 
-It is in <webapp/js/bench.js>
+It is in [bench.js](webapp/js/bench.js)

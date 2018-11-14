@@ -1,6 +1,6 @@
 #### Init submodules
 
-git submodule update --init --recursive
+`git submodule update --init --recursive`
 
 #### Start the server
 
